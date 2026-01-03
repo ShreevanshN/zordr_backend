@@ -1,0 +1,334 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// --- USERS & AUTH ---
+enum Role {
+  USER
+  PARTNER_MANAGER
+  PARTNER_STAFF
+  ADMIN
+  SUPER_ADMIN
+}
+
+model CustomRole {
+  id          String   @id @default(uuid())
+  name        String   @unique // e.g., "Finance Manager"
+  description String?
+  permissions String[] // Array of permission codes e.g. ["VIEW_FINANCE"]
+  isSystem    Boolean  @default(false) // System roles cannot be deleted
+  users       User[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model User {
+  id            String    @id @default(uuid())
+  phone         String    @unique
+  email         String?   @unique
+  name          String?
+  password      String?   // For admin/partner password-based login
+  role          Role      @default(USER) // Keep enum for backward compatibility
+  customRoleId  String?   // Link to custom Role definition
+  customRole    CustomRole? @relation(fields: [customRoleId], references: [id])
+  
+  // Consumer Profile
+  dietary       String?   // "veg", "non-veg"
+  allergies     String[]
+  campus        String?   // User's selected campus (KITSW, SRU, etc.)
+  zCoins        Int       @default(0) // Loyalty points
+  rank          String    @default("Starter")
+  streak        Int       @default(0)
+  lastOrderDate DateTime?
+  pushToken     String?   // Expo Push Token
+  notificationPreferences Json? // { orders: boolean, promo: boolean, chat: boolean }
+  
+  // Relations
+  orders        Order[]
+  tickets       SupportTicket[]
+  cart          Cart?
+  favorites     Favorite[]
+  notifications Notification[]
+  auditLogs     AuditLog[]
+
+  
+  // For Partners/Admins
+  outletId      String?   // Linked outlet if role is PARTNER_*
+  outlet        Outlet?   @relation(fields: [outletId], references: [id])
+  
+  isActive      Boolean   @default(true)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+}
+
+// --- CAMPUSES ---
+model Campus {
+  id            String    @id @default(uuid())
+  name          String    @unique // "KITSW", "SRU"
+  location      String    // "Warangal"
+  city          String
+  state         String
+  established   DateTime?
+  contactPerson String?
+  contactPhone  String?
+  contactEmail  String?
+  isActive      Boolean   @default(true)
+  
+  // Relations
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+}
+
+// --- OUTLETS & MENU ---
+model Outlet {
+  id             String    @id @default(uuid())
+  name           String
+  campus         String    @default("KITSW") // Added to match Frontend
+  image          String
+  location       String
+  contactPhone   String
+  isOpen         Boolean   @default(true) // Manual toggle
+  rating         Float     @default(0)
+  prepTime       String    // "15 mins"
+  
+  // Operations
+  operatingHours Json?     // Structured: { "mon": { "open": "09:00", "close": "21:00" } }
+  autoConfirm    Boolean   @default(false)
+  
+  // Payment Preferences (Partner Settings)
+  paymentFrequency       String?   @default("weekly") // "weekly", "biweekly", "monthly"
+  preferredPaymentMethod String?   @default("bank-transfer") // "bank-transfer", "upi", "cheque"
+  
+  // Relations
+  managers       User[]
+  menu           MenuItem[]
+  orders         Order[]
+  settlements    Settlement[]
+  offers         Offer[]
+
+  // Platform Settings
+  commissionRate Float     @default(10.0) // Percentage
+  documents      String[]  @default([])   // Array of file URLs
+
+  // Local Settings
+  printerSettings Json?
+}
+
+model MenuItem {
+  id          String    @id @default(uuid())
+  outletId    String
+  outlet      Outlet    @relation(fields: [outletId], references: [id])
+  name        String
+  description String
+  price       Float
+  image       String
+  category    String
+  dietary     String?   // "Veg", "Non-Veg", "Vegan"
+  isAvailable Boolean   @default(true)
+  isVeg       Boolean   @default(true)
+  isDeal      Boolean   @default(false) // New field for Deals
+  isReadyToPick Boolean @default(false) // Ready to pick items (no prep time)
+  discount    String?   // e.g. "20% OFF"
+  prepTime    Int?      // Preparation time in minutes
+  dailyStock  Boolean   @default(false) // Track if item stock resets daily
+  stockResetTime DateTime? // Last time stock was reset
+
+  orderItems  OrderItem[]
+  cartItems   CartItem[]
+  favorites   Favorite[]
+
+  @@index([outletId])
+  @@index([category])
+  @@index([name])
+}
+
+// --- FAVORITES ---
+model Favorite {
+  id         String   @id @default(uuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  menuItemId String
+  menuItem   MenuItem @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
+  createdAt  DateTime @default(now())
+  
+  @@unique([userId, menuItemId])
+}
+
+// --- CART ---
+model Cart {
+  id        String     @id @default(uuid())
+  userId    String     @unique
+  user      User       @relation(fields: [userId], references: [id])
+  items     CartItem[]
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+}
+
+model CartItem {
+  id         String   @id @default(uuid())
+  cartId     String
+  cart       Cart     @relation(fields: [cartId], references: [id])
+  menuItemId String
+  menuItem   MenuItem @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
+  quantity   Int
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  
+  @@unique([cartId, menuItemId])
+}
+
+// --- ORDERS ---
+// Keeping Enum for type safety, but routes might need adjustment to match case
+enum OrderStatus {
+  PENDING
+  CONFIRMED
+  PREPARING
+  READY
+  COMPLETED
+  CANCELLED
+  OUT_FOR_DELIVERY
+  DELIVERED
+}
+
+model Order {
+  id            String      @id @default(uuid())
+  orderNumber   String      @unique // "ZOR-..."
+  userId        String
+  user          User        @relation(fields: [userId], references: [id])
+  outletId      String
+  outlet        Outlet      @relation(fields: [outletId], references: [id])
+  
+  subtotal      Float
+  tax           Float
+  discount      Float
+  total         Float
+  
+  status        String      @default("pending") // Using String to match existing route logic flexibility
+  estimatedTime String?     // "25-30 mins"
+  pickupTime    String?     // "Now" or ISO timestamp
+  pickupSlot    String?     // e.g. "09:00 AM - 09:30 AM"
+  
+  // Payment
+  paymentMethod String      @default("UPI") // Changed default to UPI
+  paymentId     String?     // Gateway Transaction ID
+  paymentStatus String      @default("PENDING") // SUCCESS, FAILED
+  
+  // QR
+  qrCode        String?     // Unique token for pickup scanning
+  isQrScanned   Boolean     @default(false)
+  
+  items         OrderItem[]
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+  completedAt   DateTime?
+  instructions  String?     // Special cooking instructions
+
+  @@index([userId])
+  @@index([outletId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model OrderItem {
+  id         String   @id @default(uuid())
+  orderId    String
+  order      Order    @relation(fields: [orderId], references: [id])
+  menuItemId String?
+  menuItem   MenuItem? @relation(fields: [menuItemId], references: [id], onDelete: SetNull)
+  name       String   // Snapshot name
+  price      Float    // Snapshot price
+  quantity   Int
+}
+
+// --- LOYALTY & OFFERS ---
+model Offer {
+  id           String   @id @default(uuid())
+  code         String   @unique // "ZORDR50"
+  description  String
+  outletId     String?  // Null = Platform-wide offer
+  outlet       Outlet?  @relation(fields: [outletId], references: [id])
+  discountType String   // "FLAT", "PERCENTAGE"
+  value        Float
+  minOrderVal  Float
+  validUntil   DateTime
+  isActive     Boolean  @default(true)
+  
+  // Enhanced Offers System
+  offerType            String    @default("OFFER") // "OFFER", "COUPON"
+  source               String    @default("PARTNER") // "ADMIN", "PARTNER"
+  applicableType       String?   @default("ALL") // "ALL", "CATEGORY", "ITEM", "COMBO"
+  applicableCategories String[]  @default([]) // Array of category names
+  applicableItemIds    String[]  @default([]) // Array of item IDs
+  comboItems           Json?     // For combo offers: {items: [{itemId, quantity}]}
+  maxDiscount          Float?    // Maximum discount cap for percentage offers
+}
+
+// --- ADMIN & FINANCE ---
+model Settlement {
+  id           String   @id @default(uuid())
+  outletId     String
+  outlet       Outlet   @relation(fields: [outletId], references: [id])
+  startDate    DateTime
+  endDate      DateTime
+  totalSales   Float
+  platformFee  Float
+  netPayout    Float
+  status       String   // "PENDING", "PROCESSED"
+  createdAt    DateTime @default(now())
+}
+
+model SupportTicket {
+  id           String   @id @default(uuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id])
+  subject      String
+  status       String   // "OPEN", "RESOLVED"
+  messages     Json     // Array of messages
+  createdAt    DateTime @default(now())
+}
+
+model Banner {
+  id           String   @id @default(uuid())
+  imageUrl     String
+  targetUrl    String?
+  isActive     Boolean  @default(true)
+  order        Int      @default(0)
+}
+
+// --- NOTIFICATIONS ---
+model Notification {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      String   // "order", "promo", "system"
+  title     String
+  message   String
+  read      Boolean  @default(false)
+  targetId  String?  // ID of related order/item
+  createdAt DateTime @default(now())
+}
+
+// --- SYSTEM SETTINGS ---
+model SystemSetting {
+  key       String   @id
+  value     String   // JSON stringified value
+  updatedAt DateTime @updatedAt
+}
+
+// --- AUDIT LOGS ---
+model AuditLog {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  action    String   // "LOGIN", "UPDATE_ORDER", "DELETE_OFFER"
+  details   Json?    // Detailed changes: { before: ..., after: ... }
+  targetId  String?  // ID of the object changed
+  ipAddress String?
+  userAgent String?
+  createdAt DateTime @default(now())
+}

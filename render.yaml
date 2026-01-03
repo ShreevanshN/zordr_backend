@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: zordr-backend
+    runtime: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: zordr-db
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_EXPIRES_IN
+        value: 7d
+      - key: CORS_ORIGIN
+        value: '*'
+    healthCheckPath: /health
+
+databases:
+  - name: zordr-db
+    plan: free
+    databaseName: zordr
+    user: zordr_user
